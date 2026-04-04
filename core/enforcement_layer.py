@@ -1,139 +1,134 @@
 """
-Enforcement Layer - Final validation before trade execution
-Performs real-time checks including account balance, market hours, etc.
+Enforcement Layer - Final gatekeeper before trade execution
+DETERMINISTIC - No LLM, pure Python logic
 """
-from typing import Dict, Any
-from datetime import datetime, time
-import alpaca_trade_api as tradeapi
-
-from config.settings import settings
+from typing import Dict, Any, List
+from datetime import datetime
 
 
 class EnforcementLayer:
     """
-    Final enforcement checks before trade execution
-    Validates real-time constraints like account balance, market hours
+    Final enforcement layer that makes ALLOW/BLOCK decisions
+    Uses PolicyEngine for rule validation
+    
+    NO LLM INVOLVEMENT - All decisions are rule-based
     """
     
-    def __init__(self):
-        # Initialize Alpaca API for account checks
-        self.alpaca = tradeapi.REST(
-            key_id=settings.ALPACA_API_KEY,
-            secret_key=settings.ALPACA_SECRET_KEY,
-            base_url=settings.ALPACA_BASE_URL
-        )
-    
-    async def enforce(self, intent: Dict[str, Any], analysis: Dict[str, Any]) -> Dict[str, Any]:
+    def __init__(self, policy_engine):
         """
-        Perform final enforcement checks
+        Initialize enforcement layer
         
         Args:
-            intent: Validated trading intent
-            analysis: Market analysis data
-            
-        Returns:
-            dict: Enforcement result with approval status
+            policy_engine: PolicyEngine instance for validation
         """
-        checks = []
+        self.policy_engine = policy_engine
+        self.daily_trade_count = 0  # In production, load from database
+    
+    def enforce(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Make final ALLOW or BLOCK decision on trade intent
         
-        # Check 1: Account has sufficient buying power
-        balance_check = await self._check_buying_power(intent)
-        checks.append(balance_check)
-        if not balance_check["passed"]:
+        Args:
+            intent: Trading intent with keys:
+                - symbol: str
+                - action: str
+                - amount: float
+                - quantity: int (optional)
+        
+        Returns:
+            dict: {
+                "decision": "ALLOW" | "BLOCK",
+                "reason": str,
+                "violations": list[str] (if BLOCK)
+            }
+        """
+        # Step 1: Validate against policies
+        validation_result = self.policy_engine.validate(intent)
+        
+        if not validation_result["valid"]:
             return {
-                "approved": False,
-                "reason": balance_check["reason"],
-                "checks": checks
+                "decision": "BLOCK",
+                "reason": "Policy violations detected",
+                "violations": validation_result["violations"]
             }
         
-        # Check 2: Market is open (if required)
-        market_check = self._check_market_hours()
-        checks.append(market_check)
-        if not market_check["passed"]:
+        # Step 2: Check daily trade limit
+        max_daily = self.policy_engine.get_policy("max_daily_trades", float('inf'))
+        if self.daily_trade_count >= max_daily:
             return {
-                "approved": False,
-                "reason": market_check["reason"],
-                "checks": checks
+                "decision": "BLOCK",
+                "reason": f"Daily trade limit reached ({max_daily} trades)",
+                "violations": [f"Current count: {self.daily_trade_count}, Max: {max_daily}"]
             }
         
-        # Check 3: No duplicate orders
-        duplicate_check = await self._check_duplicate_orders(intent)
-        checks.append(duplicate_check)
-        if not duplicate_check["passed"]:
+        # Step 3: Additional runtime checks
+        runtime_checks = self._perform_runtime_checks(intent)
+        if not runtime_checks["passed"]:
             return {
-                "approved": False,
-                "reason": duplicate_check["reason"],
-                "checks": checks
+                "decision": "BLOCK",
+                "reason": runtime_checks["reason"],
+                "violations": runtime_checks.get("violations", [])
             }
         
-        # All checks passed
+        # All checks passed - ALLOW the trade
         return {
-            "approved": True,
+            "decision": "ALLOW",
             "reason": "All enforcement checks passed",
-            "checks": checks
+            "violations": []
         }
     
-    async def _check_buying_power(self, intent: Dict[str, Any]) -> Dict[str, Any]:
-        """Check if account has sufficient buying power"""
-        try:
-            # TODO: Implement actual Alpaca account check
-            # account = self.alpaca.get_account()
-            # buying_power = float(account.buying_power)
+    def _perform_runtime_checks(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Perform additional runtime validation checks
+        
+        Args:
+            intent: Trading intent
             
-            # Placeholder
-            buying_power = 100000.0
-            
-            # Estimate required buying power
-            estimated_cost = intent.get("quantity", 0) * 100  # Assume $100/share
-            
-            if estimated_cost > buying_power:
-                return {
-                    "passed": False,
-                    "reason": f"Insufficient buying power: ${buying_power} < ${estimated_cost}"
-                }
-            
-            return {"passed": True, "reason": "Sufficient buying power"}
-            
-        except Exception as e:
+        Returns:
+            dict: Check result
+        """
+        violations = []
+        
+        # Check 1: Validate data types
+        amount = intent.get("amount")
+        if not isinstance(amount, (int, float)):
+            violations.append("Amount must be a number")
+        elif amount <= 0:
+            violations.append("Amount must be greater than 0")
+        
+        # Check 2: Validate symbol format (basic check)
+        symbol = intent.get("symbol", "")
+        if not symbol or not symbol.replace(".", "").isalnum():
+            violations.append("Invalid symbol format")
+        
+        # Check 3: Validate action is uppercase
+        action = intent.get("action", "")
+        if action != action.upper():
+            violations.append("Action must be uppercase")
+        
+        if violations:
             return {
                 "passed": False,
-                "reason": f"Error checking buying power: {str(e)}"
+                "reason": "Runtime validation failed",
+                "violations": violations
             }
+        
+        return {"passed": True, "reason": "Runtime checks passed"}
     
-    def _check_market_hours(self) -> Dict[str, Any]:
-        """Check if market is currently open"""
-        try:
-            # TODO: Implement actual market hours check using Alpaca
-            # clock = self.alpaca.get_clock()
-            # is_open = clock.is_open
-            
-            # Placeholder - basic time check
-            now = datetime.now().time()
-            market_open = time(9, 30)  # 9:30 AM
-            market_close = time(16, 0)  # 4:00 PM
-            
-            is_open = market_open <= now <= market_close
-            
-            if not is_open:
-                return {
-                    "passed": False,
-                    "reason": "Market is currently closed"
-                }
-            
-            return {"passed": True, "reason": "Market is open"}
-            
-        except Exception as e:
-            # In case of error, allow trade (fail-open for now)
-            return {"passed": True, "reason": f"Could not verify market hours: {str(e)}"}
+    def increment_daily_count(self) -> None:
+        """
+        Increment daily trade counter
+        In production, this would update the database
+        """
+        self.daily_trade_count += 1
     
-    async def _check_duplicate_orders(self, intent: Dict[str, Any]) -> Dict[str, Any]:
-        """Check for duplicate pending orders"""
-        try:
-            # TODO: Implement duplicate order check
-            # orders = self.alpaca.list_orders(status='open')
-            # Check if similar order exists
-            
-            return {"passed": True, "reason": "No duplicate orders found"}
-            
-        except Exception as e:
-            return {"passed": True, "reason": f"Could not check duplicates: {str(e)}"}
+    def reset_daily_count(self) -> None:
+        """
+        Reset daily trade counter
+        Should be called at market close or start of new trading day
+        """
+        self.daily_trade_count = 0
+    
+    def get_daily_count(self) -> int:
+        """Get current daily trade count"""
+        return self.daily_trade_count

@@ -1,135 +1,133 @@
 """
 Policy Engine - Evaluates trading intents against defined policies
-Loads and enforces trading policies from configuration
+DETERMINISTIC - No LLM, pure Python logic
 """
 import json
 from typing import Dict, Any, List
 from pathlib import Path
 
-from config.settings import settings
-
 
 class PolicyEngine:
     """
-    Evaluates trading intents against policy rules
-    Loads policies from JSON configuration and validates trades
+    Deterministic policy evaluation engine
+    Validates trading intents against rules loaded from policies.json
+    
+    NO LLM INVOLVEMENT - All logic is rule-based
     """
     
-    def __init__(self):
+    def __init__(self, policy_file: str = "config/policies.json"):
+        """
+        Initialize policy engine
+        
+        Args:
+            policy_file: Path to policies.json file
+        """
+        self.policy_file = policy_file
         self.policies = self._load_policies()
     
     def _load_policies(self) -> Dict[str, Any]:
-        """Load policies from configuration file"""
-        policy_path = Path(settings.POLICY_FILE)
+        """
+        Load policies from JSON file
+        
+        Returns:
+            dict: Loaded policies
+            
+        Raises:
+            FileNotFoundError: If policy file doesn't exist
+            json.JSONDecodeError: If policy file is invalid JSON
+        """
+        policy_path = Path(self.policy_file)
         
         if not policy_path.exists():
-            # Return default policies if file doesn't exist
-            return self._get_default_policies()
+            raise FileNotFoundError(f"Policy file not found: {self.policy_file}")
         
         with open(policy_path, 'r') as f:
             return json.load(f)
     
-    def _get_default_policies(self) -> Dict[str, Any]:
-        """Get default policies if config file doesn't exist"""
-        return {
-            "max_position_size": 10000,
-            "max_order_value": 50000,
-            "allowed_symbols": [],  # Empty means all allowed
-            "blocked_symbols": [],
-            "max_daily_trades": 50,
-            "max_loss_per_trade": 1000,
-            "require_stop_loss": False,
-            "trading_hours_only": True
-        }
-    
-    async def evaluate(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+    def validate(self, intent: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Evaluate intent against all policies
+        Validate trading intent against all policies
         
         Args:
-            intent: Trading intent to evaluate
-            
+            intent: Trading intent with keys:
+                - symbol: str (stock ticker)
+                - action: str (BUY, SELL, SHORT, MARGIN, etc.)
+                - amount: float (dollar amount)
+                - quantity: int (optional, number of shares)
+        
         Returns:
-            dict: Evaluation result with pass/fail and violations
+            dict: {
+                "valid": bool,
+                "violations": list[str]
+            }
         """
         violations = []
         
-        # Check symbol restrictions
-        symbol_check = self._check_symbol_restrictions(intent["symbol"])
-        if not symbol_check["passed"]:
-            violations.append(symbol_check["reason"])
+        # Extract intent fields
+        symbol = intent.get("symbol", "").upper()
+        action = intent.get("action", "").upper()
+        amount = intent.get("amount", 0)
         
-        # Check position size limits
-        size_check = self._check_position_size(intent)
-        if not size_check["passed"]:
-            violations.append(size_check["reason"])
+        # Rule 1: Check trade amount limit
+        max_amount = self.policies.get("max_trade_amount", float('inf'))
+        if amount > max_amount:
+            violations.append(
+                f"Trade amount ${amount} exceeds maximum ${max_amount}"
+            )
         
-        # Check order value limits
-        value_check = self._check_order_value(intent)
-        if not value_check["passed"]:
-            violations.append(value_check["reason"])
+        # Rule 2: Check minimum trade amount
+        min_amount = self.policies.get("additional_rules", {}).get("min_trade_amount", 0)
+        if amount < min_amount:
+            violations.append(
+                f"Trade amount ${amount} below minimum ${min_amount}"
+            )
         
-        # Check daily trade limit
-        daily_limit_check = await self._check_daily_limit()
-        if not daily_limit_check["passed"]:
-            violations.append(daily_limit_check["reason"])
+        # Rule 3: Check symbol whitelist
+        allowed_symbols = self.policies.get("allowed_symbols", [])
+        if allowed_symbols and symbol not in allowed_symbols:
+            violations.append(
+                f"Symbol '{symbol}' not in allowed list: {allowed_symbols}"
+            )
+        
+        # Rule 4: Check blocked actions
+        blocked_actions = self.policies.get("blocked_actions", [])
+        if action in blocked_actions:
+            violations.append(
+                f"Action '{action}' is blocked by policy"
+            )
+        
+        # Rule 5: Check allowed actions
+        allowed_actions = self.policies.get("additional_rules", {}).get("allowed_actions", [])
+        if allowed_actions and action not in allowed_actions:
+            violations.append(
+                f"Action '{action}' not in allowed actions: {allowed_actions}"
+            )
+        
+        # Rule 6: Validate required fields
+        if not symbol:
+            violations.append("Symbol is required")
+        
+        if not action:
+            violations.append("Action is required")
         
         return {
-            "passed": len(violations) == 0,
-            "violations": violations,
-            "policies_checked": ["symbol", "position_size", "order_value", "daily_limit"]
+            "valid": len(violations) == 0,
+            "violations": violations
         }
     
-    def _check_symbol_restrictions(self, symbol: str) -> Dict[str, Any]:
-        """Check if symbol is allowed"""
-        if symbol in self.policies.get("blocked_symbols", []):
-            return {"passed": False, "reason": f"Symbol {symbol} is blocked"}
+    def get_policy(self, key: str, default: Any = None) -> Any:
+        """
+        Get a specific policy value
         
-        allowed = self.policies.get("allowed_symbols", [])
-        if allowed and symbol not in allowed:
-            return {"passed": False, "reason": f"Symbol {symbol} not in allowed list"}
-        
-        return {"passed": True, "reason": ""}
+        Args:
+            key: Policy key
+            default: Default value if key not found
+            
+        Returns:
+            Policy value or default
+        """
+        return self.policies.get(key, default)
     
-    def _check_position_size(self, intent: Dict[str, Any]) -> Dict[str, Any]:
-        """Check if position size is within limits"""
-        max_size = self.policies.get("max_position_size", float('inf'))
-        quantity = intent.get("quantity", 0)
-        
-        if quantity > max_size:
-            return {
-                "passed": False,
-                "reason": f"Position size {quantity} exceeds limit {max_size}"
-            }
-        
-        return {"passed": True, "reason": ""}
-    
-    def _check_order_value(self, intent: Dict[str, Any]) -> Dict[str, Any]:
-        """Check if order value is within limits"""
-        # TODO: Calculate actual order value using current price
-        max_value = self.policies.get("max_order_value", float('inf'))
-        
-        # Placeholder - would need current price
-        estimated_value = intent.get("quantity", 0) * 100  # Assume $100/share
-        
-        if estimated_value > max_value:
-            return {
-                "passed": False,
-                "reason": f"Order value ${estimated_value} exceeds limit ${max_value}"
-            }
-        
-        return {"passed": True, "reason": ""}
-    
-    async def _check_daily_limit(self) -> Dict[str, Any]:
-        """Check if daily trade limit has been reached"""
-        # TODO: Query database for today's trade count
-        max_daily = self.policies.get("max_daily_trades", float('inf'))
-        current_count = 0  # Placeholder
-        
-        if current_count >= max_daily:
-            return {
-                "passed": False,
-                "reason": f"Daily trade limit ({max_daily}) reached"
-            }
-        
-        return {"passed": True, "reason": ""}
+    def reload_policies(self) -> None:
+        """Reload policies from file"""
+        self.policies = self._load_policies()
