@@ -1,0 +1,37 @@
+{
+  "version": "1.0",
+  "description": "INTENTRA Trading Policies",
+  
+  "position_limits": {
+    "max_position_size": 1000,
+    "max_position_value": 50000,
+    "max_portfolio_concentration": 0.2
+  },
+  
+  "order_limits": {
+    "max_order_value": 10000,
+    "max_order_quantity": 500,
+    "min_order_quantity": 1
+  },
+  
+  "risk_limits": {
+    "max_loss_per_trade": 1000,
+    "max_daily_loss": 5000,
+    "max_drawdown": 0.15,
+    "require_stop_loss": false
+  },
+  
+  "trading_restrictions": {
+    "allowed_symbols": [],
+    "blocked_symbols": [],
+    "allowed_asset_classes": ["us_equity"],
+    "trading_hours_only": true,
+    "max_daily_trades": 50
+  },
+  
+  "compliance": {
+    "pattern_day_trading_check": true,
+    "margin_requirements": true,
+    "regulatory_compliance": true
+  }
+}
