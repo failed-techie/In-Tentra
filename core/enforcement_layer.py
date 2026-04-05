@@ -26,7 +26,7 @@ class EnforcementLayer:
     
     def enforce(self, intent: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Make final ALLOW or BLOCK decision on trade intent
+        Make final ALLOW or BLOCK decision on trade intentS
         
         Args:
             intent: Trading intent with keys:
